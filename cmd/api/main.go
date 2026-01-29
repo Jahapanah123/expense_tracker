@@ -56,7 +56,7 @@ func main() {
 	router.GET("/health", func(c *gin.Context) {
 		slog.Info("health check endpoint called")
 		c.JSON(200, gin.H{
-			"status": "ok",
+			"Message": "I love you",
 		})
 	})
 
@@ -77,8 +77,13 @@ func main() {
 		userRoute.DELETE("/expenses/:id", expenseHandler.DeleteExpenseHandler)
 	}
 
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080" // fallback for local
+	}
+
 	srv := &http.Server{
-		Addr:    ":" + cfg.Port,
+		Addr:    ":" + port,
 		Handler: router,
 	}
 
