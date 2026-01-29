@@ -56,7 +56,7 @@ func main() {
 	router.GET("/health", func(c *gin.Context) {
 		slog.Info("health check endpoint called")
 		c.JSON(200, gin.H{
-			"Message": "I love you",
+			"status": "API is working",
 		})
 	})
 
