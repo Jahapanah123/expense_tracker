@@ -7,6 +7,5 @@ services:
     start_command: ./main
     env_vars:
       - key: PORT
-        value: 8080
+        value: "8080"
       - key: JWT_SECRET
-        value: mystrongsecret123
