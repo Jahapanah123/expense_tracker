@@ -1,9 +1,0 @@
-services:
-  - type: web
-    name: expense-tracker
-    env: go
-    goVersion: 1.25.4
-    buildCommand: go build -o main ./cmd/api
-    startCommand: ./main
-    envVars:
-      - key: JWT_SECRET
