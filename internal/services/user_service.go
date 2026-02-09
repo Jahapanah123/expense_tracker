@@ -6,9 +6,9 @@ import (
 	"expense-tracker/internal/model"
 	"expense-tracker/internal/repository"
 	"expense-tracker/internal/utils"
+	"fmt"
 	"regexp"
-
-	"github.com/jackc/pgx/v5"
+	"strings"
 )
 
 type UserService struct {
@@ -20,17 +20,18 @@ func NewUserService(userRepo repository.UserRepository) *UserService {
 }
 
 func (s *UserService) RegisterUser(ctx context.Context, email, password string) (*model.User, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
 	if err := s.validateEmail(email); err != nil {
-		return nil, err
+		return nil, utils.ErrInvalidInput
 	}
 
 	if err := s.validatePassword(password); err != nil {
-		return nil, err
+		return nil, utils.ErrInvalidInput
 	}
 
 	hashedPassword, err := utils.HashPassword(password)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to hash password: %w", err)
 	}
 
 	// call repo
@@ -38,7 +39,10 @@ func (s *UserService) RegisterUser(ctx context.Context, email, password string) 
 	user, err := s.userRepo.CreateUser(ctx, email, hashedPassword)
 
 	if err != nil {
-		return nil, err
+		if errors.Is(err, utils.ErrUserAlreadyExist) {
+			return nil, utils.ErrUserAlreadyExist
+		}
+		return nil, fmt.Errorf("failed to create user: %w", err)
 	}
 	return user, nil
 }
@@ -66,27 +70,27 @@ func (s *UserService) validatePassword(password string) error {
 	return nil
 }
 
-func (s *UserService) LogInUserService(ctx context.Context, email, password string) (*model.User, error) {
-
-	if err := s.validateLoginEmail(email); err != nil {
-		return nil, err
-	}
+func (s *UserService) LogInUserService(ctx context.Context, email, password string) (string, error) {
 
 	// repo call
-
 	user, err := s.userRepo.LogInUser(ctx, email)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, errors.New("no user found")
+		if errors.Is(err, utils.ErrUserNotFound) {
+			return "", utils.ErrInvalidCredentials
 		}
-		return nil, err
+		return "", fmt.Errorf("log in failed: %w", err)
 	}
 	// compare password
 
 	if err := utils.CheckPassword(password, user.PasswordHash); err != nil {
-		return nil, errors.New("incorrect password")
+		return "", utils.ErrInvalidCredentials
 	}
-	return user, nil
+	// token generation
+	token, err := utils.GenerateToken(int64(user.ID))
+	if err != nil {
+		return "", fmt.Errorf("token genration failed: %w", err)
+	}
+	return token, nil
 }
 
 func (s *UserService) validateLoginEmail(email string) error {
@@ -96,16 +100,17 @@ func (s *UserService) validateLoginEmail(email string) error {
 	return nil
 }
 
-func (s *UserService) GetUserService(ctx context.Context, id int) (*model.User, error) {
-	if id <= 0 {
-		return nil, errors.New("invalid user id")
+func (s *UserService) GetUserService(ctx context.Context, userID int) (*model.User, error) {
+	if userID <= 0 {
+		return nil, utils.ErrInvalidInput
 	}
-	user, err := s.userRepo.GetUser(ctx, id)
+	// call repo
+	user, err := s.userRepo.GetUser(ctx, userID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, errors.New("invalid user")
+		if errors.Is(err, utils.ErrUserNotFound) {
+			return nil, utils.ErrUserNotFound
 		}
-		return nil, err
+		return nil, fmt.Errorf("failed to fetch user: %w", err)
 	}
 	return user, nil
 }

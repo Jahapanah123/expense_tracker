@@ -32,7 +32,7 @@ func NewExpenseHandler(expenseService *services.ExpenseService) *ExpenseHandler 
 	return &ExpenseHandler{expenseService: expenseService}
 }
 
-func (h *ExpenseHandler) AddExpenseHandler(c *gin.Context) {
+func (h *ExpenseHandler) CreateExpenseHandler(c *gin.Context) {
 	userID, exists := c.Get("user_id")
 
 	if !exists {
@@ -59,12 +59,18 @@ func (h *ExpenseHandler) AddExpenseHandler(c *gin.Context) {
 
 	// call service
 
-	expense, err := h.expenseService.AddExpenseService(ctx, id, input.Amount, input.Category)
+	expense, err := h.expenseService.CreateExpenseService(ctx, id, input.Amount, input.Category)
 	if err != nil {
-		slog.Warn("Add expense failed", "user_id", id, "error", err)
-		utils.RespondError(c, http.StatusBadRequest, "invalid input")
+		slog.Warn("create expense failed", "user_id", id, "error", err)
+		if errors.Is(err, utils.ErrInvalidAmount) || errors.Is(err, utils.ErrInvalidCategory) {
+			utils.RespondError(c, http.StatusBadRequest, "invalid amount or category")
+			return
+		}
+		slog.Error("failed to create expense", "error", err, "user_id", id)
+		utils.RespondError(c, http.StatusInternalServerError, "internal server error")
 		return
 	}
+
 	slog.Info("expense created successfully", "user_id", id, "expense_id", expense.ID)
 	c.JSON(http.StatusCreated, gin.H{
 		"id":         expense.ID,
@@ -75,8 +81,8 @@ func (h *ExpenseHandler) AddExpenseHandler(c *gin.Context) {
 }
 
 func (h *ExpenseHandler) GetAllExpenseHandler(c *gin.Context) {
-	userID, exits := c.Get("user_id")
-	if !exits {
+	userID, exists := c.Get("user_id")
+	if !exists {
 		slog.Warn("get expenses failed: user not logged in")
 		utils.RespondError(c, http.StatusUnauthorized, "unauthorized")
 		return
@@ -96,7 +102,11 @@ func (h *ExpenseHandler) GetAllExpenseHandler(c *gin.Context) {
 
 	expenses, err := h.expenseService.GetAllExpenseService(ctx, id)
 	if err != nil {
-		slog.Error("failed to retrieve expenses", "user_id", id, "error", err)
+		if errors.Is(err, utils.ErrInvalidInput) {
+			utils.RespondError(c, http.StatusBadRequest, "invalid input")
+			return
+		}
+		slog.Error("failed to fetch expenses", "error", err, "user_id", id)
 		utils.RespondError(c, http.StatusInternalServerError, "internal server error")
 		return
 	}
@@ -122,7 +132,7 @@ func (h *ExpenseHandler) GetExpenseByIDHandler(c *gin.Context) {
 	// get expenseID from URL
 	idStr := c.Param("id")
 	expenseID, err := strconv.Atoi(idStr)
-	if err != nil {
+	if err != nil || expenseID <= 0 { // expenseID <= 0 because what if user put -1 or 0
 		slog.Warn("invalid expense id", "user_id", id)
 		utils.RespondError(c, http.StatusBadRequest, "invalid expense id")
 		return
@@ -134,12 +144,11 @@ func (h *ExpenseHandler) GetExpenseByIDHandler(c *gin.Context) {
 	// call service
 	expense, err := h.expenseService.GetExpenseByIDService(ctx, expenseID, id)
 	if err != nil {
-		if errors.Is(err, services.ErrExpenseNotFound) {
-			slog.Info("expense not found", "expenseID", expenseID, "user_id", id)
+		if errors.Is(err, utils.ErrExpenseNotFound) {
 			utils.RespondError(c, http.StatusNotFound, "expense not found")
 			return
 		}
-		slog.Error("failed to fetch expense", "expenseID", expenseID, "user_id", id)
+		slog.Error("failed to fetch expense", "error", err, "user_id", id)
 		utils.RespondError(c, http.StatusInternalServerError, "internal server error")
 		return
 	}
@@ -165,7 +174,7 @@ func (h *ExpenseHandler) UpdateExpenseHandler(c *gin.Context) {
 	// get expenseID from URL
 	idStr := c.Param("id")
 	expenseID, err := strconv.Atoi(idStr)
-	if err != nil {
+	if err != nil || expenseID <= 0 {
 		slog.Warn("invalid expense id", "user_id", id)
 		utils.RespondError(c, http.StatusBadRequest, "invalid expense id")
 		return
@@ -191,13 +200,18 @@ func (h *ExpenseHandler) UpdateExpenseHandler(c *gin.Context) {
 
 	updatedExpense, err := h.expenseService.UpdateExpenseService(ctx, expenseID, id, serviceInput)
 	if err != nil {
-		if errors.Is(err, services.ErrExpenseNotFound) {
-			slog.Info("expense not found", "user_id", id, "expenseID", expenseID)
+		slog.Warn("failed to update expense", "user_id", id)
+		switch {
+		case errors.Is(err, utils.ErrInvalidInput), errors.Is(err, utils.ErrInvalidAmount),
+			errors.Is(err, utils.ErrInvalidCategory):
+			utils.RespondError(c, http.StatusBadRequest, err.Error()) // because err humne predefined kiye hue h so no leakage
+
+		case errors.Is(err, utils.ErrExpenseNotFound):
 			utils.RespondError(c, http.StatusNotFound, "expense not found")
-			return
+		default:
+			slog.Error("failed to update expense", "error", err, "user_id", id)
+			utils.RespondError(c, http.StatusInternalServerError, "internal server error")
 		}
-		slog.Error("failed to update expense", "user_id", userID, "expenseID", expenseID)
-		utils.RespondError(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 	slog.Info("expense updated", "user_id", userID, "expenseID", expenseID)
@@ -223,7 +237,7 @@ func (h *ExpenseHandler) DeleteExpenseHandler(c *gin.Context) {
 
 	idStr := c.Param("id")
 	expenseID, err := strconv.Atoi(idStr)
-	if err != nil {
+	if err != nil || expenseID <= 0 {
 		slog.Warn("invalid expense id", "user_id", id)
 		utils.RespondError(c, http.StatusBadRequest, "invalid expense id")
 		return
@@ -236,12 +250,15 @@ func (h *ExpenseHandler) DeleteExpenseHandler(c *gin.Context) {
 
 	err = h.expenseService.DeleteExpenseService(ctx, expenseID, id)
 	if err != nil {
-		if errors.Is(err, services.ErrExpenseNotFound) {
-			slog.Info("expense not found", "user_id", id, "expenseID", expenseID)
+		if errors.Is(err, utils.ErrInvalidInput) {
+			utils.RespondError(c, http.StatusBadRequest, "invalid input")
+			return
+		}
+		if errors.Is(err, utils.ErrExpenseNotFound) {
 			utils.RespondError(c, http.StatusNotFound, "expense not found")
 			return
 		}
-		slog.Error("failed to delete expense", "user_id", id, "expenseID", expenseID)
+		slog.Error("failed to delete expense", "error", err, "user_id", id)
 		utils.RespondError(c, http.StatusInternalServerError, "internal server error")
 		return
 	}

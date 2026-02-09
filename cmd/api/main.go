@@ -30,7 +30,7 @@ func main() {
 	}
 	slog.Info("Config loaded successfully")
 
-	pool, err := db.Connect(cfg.DatabaseURL)
+	pool, err := db.Connect(cfg)
 	if err != nil {
 		slog.Error("failed to connect to database", "error", err)
 		os.Exit(1)
@@ -46,7 +46,7 @@ func main() {
 
 	// Expense
 	expenseRepo := repository.NewExpenseRepository(pool)
-	expenseService := services.NewExpenseService(expenseRepo)
+	expenseService := services.NewExpenseService(expenseRepo, pool)
 	expenseHandler := handler.NewExpenseHandler(expenseService)
 
 	router := gin.Default()
@@ -70,7 +70,7 @@ func main() {
 	userRoute.Use(middleware.AuthMiddleware())
 	{
 		userRoute.GET("/users/me", userHandler.GetUserHandler)
-		userRoute.POST("/users/expenses", expenseHandler.AddExpenseHandler)
+		userRoute.POST("/users/expenses", expenseHandler.CreateExpenseHandler)
 		userRoute.GET("/users/expenses", expenseHandler.GetAllExpenseHandler)
 		userRoute.GET("/expenses/:id", expenseHandler.GetExpenseByIDHandler)
 		userRoute.PUT("/expenses/:id", expenseHandler.UpdateExpenseHandler)
@@ -79,11 +79,11 @@ func main() {
 
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8080" // fallback for local
+		port = "8080" // fallback to local
 	}
 
 	srv := &http.Server{
-		Addr:    ":" + port,
+		Addr:    ":" + cfg.Port(),
 		Handler: router,
 	}
 

@@ -5,17 +5,23 @@ import (
 	"errors"
 	"expense-tracker/internal/model"
 	"expense-tracker/internal/repository"
+	"expense-tracker/internal/utils"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type ExpenseService struct {
 	expenseRepo repository.ExpenseRepository
+	pool        *pgxpool.Pool
 }
 
-func NewExpenseService(expenseRepo repository.ExpenseRepository) *ExpenseService {
-	return &ExpenseService{expenseRepo: expenseRepo}
+func NewExpenseService(expenseRepo repository.ExpenseRepository, pool *pgxpool.Pool) *ExpenseService {
+	return &ExpenseService{
+		expenseRepo: expenseRepo,
+		pool:        pool,
+	}
 }
 
 type UpdateExpenseInput struct {
@@ -23,46 +29,46 @@ type UpdateExpenseInput struct {
 	Category *string
 }
 
-var ErrExpenseNotFound = errors.New("expense not found") // from GetExpenseByIDService , gotta show this error in handler and dont wanna introduce pgx in handler so.
-
-func (s *ExpenseService) AddExpenseService(ctx context.Context, userID int, amount float64, category string) (*model.Expense, error) {
-	if err := s.ValidatePrice(amount); err != nil {
-		return nil, err
+func (s *ExpenseService) CreateExpenseService(ctx context.Context, userID int, amount float64, category string) (*model.Expense, error) {
+	if amount <= 0 {
+		return nil, utils.ErrInvalidAmount
 	}
-
-	if err := s.validateCategory(category); err != nil {
-		return nil, err
+	if category == "" {
+		return nil, utils.ErrInvalidCategory
 	}
-	// call repo
+	var expense *model.Expense
+	// transaction start
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 
-	expense, err := s.expenseRepo.CreateExpense(ctx, userID, amount, category)
+		var innerErr error
 
+		expense, innerErr = s.expenseRepo.CreateExpense(ctx, userID, amount, category, tx) // call repo
+
+		if innerErr != nil {
+			return innerErr
+		}
+
+		innerErr = s.expenseRepo.AddUserStats(ctx, userID, amount, tx) // call repo
+		if innerErr != nil {
+			return innerErr
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("transaction error: %w", err)
 	}
 	return expense, nil
 }
 
-func (s *ExpenseService) ValidatePrice(amount float64) error {
-	if amount <= 0 {
-		return errors.New("amount must be greater than 0")
-	}
-	return nil
-}
-
-func (s *ExpenseService) validateCategory(category string) error {
-	if category == " " {
-		return errors.New("category is required")
-	}
-	return nil
-}
-
 func (s *ExpenseService) GetAllExpenseService(ctx context.Context, userID int) ([]*model.Expense, error) {
+	if userID <= 0 {
+		return nil, utils.ErrInvalidInput
+	}
 	// call repo
 
 	expenses, err := s.expenseRepo.GetAllExpense(ctx, userID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch expenses: %W", err)
+		return nil, fmt.Errorf("failed to fetch expenses: %w", err)
 	}
 	return expenses, nil
 }
@@ -70,16 +76,12 @@ func (s *ExpenseService) GetAllExpenseService(ctx context.Context, userID int) (
 func (s *ExpenseService) GetExpenseByIDService(ctx context.Context, expenseId, userID int) (*model.Expense, error) {
 
 	if expenseId <= 0 || userID <= 0 {
-		return nil, errors.New("invalid id")
+		return nil, utils.ErrInvalidInput
 	}
 	// call repo
-
 	expense, err := s.expenseRepo.GetExpenseByID(ctx, expenseId, userID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrExpenseNotFound
-		}
-		return nil, errors.New("failed to fetch expense")
+		return nil, fmt.Errorf("failed to fetch expense: %w", err)
 	}
 	return expense, nil
 }
@@ -87,28 +89,28 @@ func (s *ExpenseService) GetExpenseByIDService(ctx context.Context, expenseId, u
 func (s *ExpenseService) UpdateExpenseService(ctx context.Context, expenseID, userID int, input UpdateExpenseInput) (*model.Expense, error) {
 
 	if expenseID <= 0 || userID <= 0 {
-		return nil, errors.New("invalid ID")
+		return nil, utils.ErrInvalidInput
 	}
 
 	// fetch existing expense
 	existing, err := s.expenseRepo.GetExpenseByID(ctx, expenseID, userID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrExpenseNotFound
+		if errors.Is(err, utils.ErrExpenseNotFound) {
+			return nil, utils.ErrExpenseNotFound
 		}
-		return nil, errors.New("failed to fetch expense")
+		return nil, fmt.Errorf("failed to fetch expense: %w", err)
 	}
 
 	if input.Amount != nil {
 		if *input.Amount <= 0 {
-			return nil, errors.New("amount must be greater than 0")
+			return nil, utils.ErrInvalidAmount
 		}
 		existing.Amount = *input.Amount
 	}
 
 	if input.Category != nil {
 		if *input.Category == "" {
-			return nil, errors.New("category can not be empty")
+			return nil, utils.ErrInvalidCategory
 		}
 		existing.Category = *input.Category
 	}
@@ -123,23 +125,26 @@ func (s *ExpenseService) UpdateExpenseService(ctx context.Context, expenseID, us
 
 func (s *ExpenseService) DeleteExpenseService(ctx context.Context, expenseID, userID int) error {
 	if expenseID <= 0 || userID <= 0 {
-		return errors.New("invalid id")
+		return utils.ErrInvalidInput
 	}
 
-	// check if expense exists
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 
-	existing, err := s.expenseRepo.GetExpenseByID(ctx, expenseID, userID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrExpenseNotFound
+		usersID, deletedAmount, innerErr := s.expenseRepo.DeleteExpense(ctx, expenseID, userID, tx) // call repo to delete expense
+
+		if innerErr != nil {
+			return innerErr
 		}
-		return fmt.Errorf("failed to fetch expense %w", err)
-	}
-	// call repo
 
-	err = s.expenseRepo.DeleteExpense(ctx, existing.ID, existing.UserID)
+		innerErr = s.expenseRepo.SubstractExpenseFromUserStats(ctx, deletedAmount, usersID, tx)
+
+		if innerErr != nil {
+			return innerErr
+		}
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("failed to delete expense %w", err)
+		return fmt.Errorf("delete transaction failed: %w", err)
 	}
 	return nil
 }

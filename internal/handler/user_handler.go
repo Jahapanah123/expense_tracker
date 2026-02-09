@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"expense-tracker/internal/services"
 	"expense-tracker/internal/utils"
 	"fmt"
@@ -42,11 +43,19 @@ func (h *UserHandler) CreateUserHandler(c *gin.Context) {
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
-
+	// call service
 	user, err := h.userService.RegisterUser(ctx, input.Email, input.Password)
 
 	if err != nil {
-		slog.Warn("register failed: email may already exist", "email", input.Email) // check pgxerror
+		if errors.Is(err, utils.ErrUserAlreadyExist) {
+			utils.RespondError(c, http.StatusConflict, "email is already registered")
+			return
+		}
+		if errors.Is(err, utils.ErrInvalidInput) {
+			utils.RespondError(c, http.StatusBadRequest, "email or password is not valid")
+			return
+		}
+		slog.Error("Create user failed", "error", err, "email", input.Email)
 		utils.RespondError(c, http.StatusInternalServerError, "internal server error")
 		return
 	}
@@ -64,7 +73,6 @@ func (h *UserHandler) LogInUserHandler(c *gin.Context) {
 	var input LogInRequest
 
 	if err := c.ShouldBindJSON(&input); err != nil {
-		slog.Warn("log in failed: invalid input", "error", err)
 		utils.RespondError(c, http.StatusBadRequest, "invalid input")
 		return
 	}
@@ -74,27 +82,20 @@ func (h *UserHandler) LogInUserHandler(c *gin.Context) {
 
 	//service call
 
-	user, err := h.userService.LogInUserService(ctx, input.Email, input.Password)
+	token, err := h.userService.LogInUserService(ctx, input.Email, input.Password)
 	if err != nil {
 		slog.Warn("log in failed", "invalid credentials", input.Email)
-		utils.RespondError(c, http.StatusUnauthorized, "invalid email or password")
-		return
-	}
-
-	token, err := utils.GenerateToken(int64(user.ID))
-
-	if err != nil {
-		slog.Error("token generation error", "userID", user.ID)
+		if errors.Is(err, utils.ErrInvalidCredentials) {
+			utils.RespondError(c, http.StatusUnauthorized, "invalid email or password")
+			return
+		}
+		slog.Error("login failed", "error", err, "email", input.Email)
 		utils.RespondError(c, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	slog.Info(" log in successfull", "user_id", user.ID)
+	slog.Info(" log in successfull", "email", input.Email)
 	c.JSON(http.StatusOK, gin.H{
 		"token": token,
-		"user": gin.H{
-			"id":    user.ID,
-			"email": user.Email,
-		},
 	})
 }
 
@@ -116,16 +117,18 @@ func (h *UserHandler) GetUserHandler(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
+	// call service
 	user, err := h.userService.GetUserService(ctx, id)
 	if err != nil {
-		slog.Warn("user not found", "user_id", id)
-		utils.RespondError(c, http.StatusNotFound, "user not found")
+		if errors.Is(err, utils.ErrUserNotFound) {
+			slog.Warn("user not found", "user_id", id)
+			utils.RespondError(c, http.StatusNotFound, "user not found")
+			return
+		}
+		slog.Error("failed to fetch user profile", "user_id", id, "error", err)
+		utils.RespondError(c, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	slog.Info("user profile pulled successfully", "user_id", userID)
-	c.JSON(http.StatusOK, gin.H{
-		"user_id":    user.ID,
-		"email":      user.Email,
-		"created_at": user.CreatedAt,
-	})
+	slog.Info("user profile pulled successfully", "user_id", id)
+	c.JSON(http.StatusOK, user)
 }
