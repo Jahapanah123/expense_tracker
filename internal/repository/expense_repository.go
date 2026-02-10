@@ -17,7 +17,8 @@ type ExpenseRepository interface {
 	AddUserStats(ctx context.Context, userID int, amount float64, db DBQuerier) error
 	GetAllExpense(ctx context.Context, userID int) ([]*model.Expense, error)
 	GetExpenseByID(ctx context.Context, expenseID, userID int) (*model.Expense, error)
-	UpdateExpense(ctx context.Context, expenseID, userID int, amount float64, category string) (*model.Expense, error)
+	UpdateExpense(ctx context.Context, expenseID, userID int, amount float64, category string, db DBQuerier) (*model.Expense, float64, error)
+	UpdateUserStats(ctx context.Context, userID int, amount float64, db DBQuerier) error
 	DeleteExpense(ctx context.Context, expenseID, userID int, db DBQuerier) (int, float64, error)
 	SubstractExpenseFromUserStats(ctx context.Context, amount float64, userID int, db DBQuerier) error
 }
@@ -140,31 +141,56 @@ func (r *expenseRepository) GetExpenseByID(ctx context.Context, expenseID, userI
 	return &expense, nil
 }
 
-func (r *expenseRepository) UpdateExpense(ctx context.Context, expenseID, userID int, amount float64, category string) (*model.Expense, error) {
-	query := `
-			UPDATE expenses
-			SET amount = $1, category = $2
-			WHERE id = $3 AND user_id = $4
-			RETURNING id, user_id, amount, category, created_at
-	`
-	var expense model.Expense
+func (r *expenseRepository) UpdateExpense(ctx context.Context, expenseID, userID int, amount float64, category string, db DBQuerier) (*model.Expense, float64, error) {
 
-	err := r.pool.QueryRow(ctx, query, amount, category, expenseID, userID).Scan(
-		// should be as per model struct whenever you are returning
+	var oldAmount float64 // extract old amount
+	query := `
+			SELECT amount FROM expenses
+			WHERE id = $1 AND user_id = $2
+			`
+	err := db.QueryRow(ctx, query, expenseID, userID).Scan(
+		&oldAmount,
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	var expense model.Expense
+	updateQuery := `
+				UPDATE expenses
+				SET amount = $1, category = $2
+				WHERE id = $3 AND user_id = $4
+				RETURNING id, user_id, amount, category
+	`
+
+	err = db.QueryRow(ctx, updateQuery, amount, category, expenseID, userID).Scan(
 		&expense.ID,
 		&expense.UserID,
 		&expense.Amount,
 		&expense.Category,
-		&expense.CreatedAt,
 	)
 
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, utils.ErrExpenseNotFound
-		}
-		return nil, fmt.Errorf("failed to update expense: %w", err)
+		return nil, 0, err
 	}
-	return &expense, nil
+	return &expense, oldAmount, nil
+}
+
+func (r *expenseRepository) UpdateUserStats(ctx context.Context, userID int, amount float64, db DBQuerier) error {
+	query := `
+			UPDATE user_stats
+			SET total_spent = total_spent + $1	
+			WHERE user_id = $2
+			`
+	result, err := db.Exec(ctx, query, amount, userID)
+	if err != nil {
+		return fmt.Errorf("failed to update user stats : %w", err)
+	}
+	// safety check
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("no stats found for user_id : %d", userID)
+	}
+	return nil
 }
 
 func (r *expenseRepository) DeleteExpense(ctx context.Context, expenseID, userID int, db DBQuerier) (int, float64, error) {

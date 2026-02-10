@@ -46,7 +46,6 @@ func AuthMiddleware() gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "user_id missing"})
 			return
 		}
-
 		c.Set("user_id", int(userID))
 		c.Next()
 	}

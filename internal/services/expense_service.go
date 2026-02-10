@@ -92,33 +92,54 @@ func (s *ExpenseService) UpdateExpenseService(ctx context.Context, expenseID, us
 		return nil, utils.ErrInvalidInput
 	}
 
-	// fetch existing expense
-	existing, err := s.expenseRepo.GetExpenseByID(ctx, expenseID, userID)
+	var updatedExpense *model.Expense
+	// transaction
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+
+		existing, err := s.expenseRepo.GetExpenseByID(ctx, expenseID, userID)
+		if err != nil {
+			if errors.Is(err, utils.ErrExpenseNotFound) {
+				return utils.ErrExpenseNotFound
+			}
+			return fmt.Errorf("failed to fetch expense : %w", err)
+		}
+
+		oldAmount := existing.Amount
+
+		if input.Amount != nil {
+			if *input.Amount <= 0 {
+				return utils.ErrInvalidAmount
+			}
+			existing.Amount = *input.Amount
+		}
+
+		if input.Category != nil {
+			if *input.Category == "" {
+				return utils.ErrInvalidCategory
+			}
+			existing.Category = *input.Category
+		}
+
+		// call repo
+
+		expense, _, err := s.expenseRepo.UpdateExpense(ctx, expenseID, userID, existing.Amount, existing.Category, tx)
+		if err != nil {
+			return fmt.Errorf("failed to update expense: %w", err)
+		}
+
+		diff := existing.Amount - oldAmount
+		if diff != 0 {
+			err := s.expenseRepo.UpdateUserStats(ctx, userID, diff, tx)
+			if err != nil {
+				return err
+			}
+		}
+		updatedExpense = expense
+		return nil // transaction successfull
+	})
+
 	if err != nil {
-		if errors.Is(err, utils.ErrExpenseNotFound) {
-			return nil, utils.ErrExpenseNotFound
-		}
-		return nil, fmt.Errorf("failed to fetch expense: %w", err)
-	}
-
-	if input.Amount != nil {
-		if *input.Amount <= 0 {
-			return nil, utils.ErrInvalidAmount
-		}
-		existing.Amount = *input.Amount
-	}
-
-	if input.Category != nil {
-		if *input.Category == "" {
-			return nil, utils.ErrInvalidCategory
-		}
-		existing.Category = *input.Category
-	}
-	// repo call
-
-	updatedExpense, err := s.expenseRepo.UpdateExpense(ctx, expenseID, userID, existing.Amount, existing.Category)
-	if err != nil {
-		return nil, fmt.Errorf("failed to update expense: %w", err)
+		return nil, fmt.Errorf("transaction failed : %w", err)
 	}
 	return updatedExpense, nil
 }
