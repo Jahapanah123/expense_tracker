@@ -13,13 +13,11 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
 func main() {
-
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
@@ -30,22 +28,23 @@ func main() {
 	}
 	slog.Info("Config loaded successfully")
 
-	pool, err := db.Connect(cfg)
+	// ✅ Fix 1: Pass context and cfg.DB (not full cfg)
+	ctx := context.Background()
+	pool, err := db.Connect(ctx, cfg.DB)
 	if err != nil {
 		slog.Error("failed to connect to database", "error", err)
 		os.Exit(1)
 	}
 	slog.Info("Connected to Database")
-
 	defer pool.Close()
 
 	// user
-	userRepo := repository.NewUserRepository(pool)
-	userService := services.NewUserService(userRepo)
+	userRepo := repository.NewUserRepository()
+	userService := services.NewUserService(userRepo, pool)
 	userHandler := handler.NewUserHandler(userService)
 
 	// Expense
-	expenseRepo := repository.NewExpenseRepository(pool)
+	expenseRepo := repository.NewExpenseRepository()
 	expenseService := services.NewExpenseService(expenseRepo, pool)
 	expenseHandler := handler.NewExpenseHandler(expenseService)
 
@@ -77,18 +76,19 @@ func main() {
 		userRoute.DELETE("/expenses/:id", expenseHandler.DeleteExpenseHandler)
 	}
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080" // fallback to local
-	}
+	// ✅ Fix 2: Use cfg.HTTP.Port (not os.Getenv + fallback)
+	port := cfg.HTTP.Port
 
 	srv := &http.Server{
-		Addr:    ":" + cfg.Port(),
-		Handler: router,
+		Addr:         ":" + port,
+		Handler:      router,
+		ReadTimeout:  cfg.HTTP.ReadTimeout,
+		WriteTimeout: cfg.HTTP.WriteTimeout,
+		IdleTimeout:  cfg.HTTP.IdleTimeout,
 	}
 
 	go func() {
-		slog.Info("server running", "port", cfg.Port)
+		slog.Info("server running", "port", port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("Server crashed", "error", err)
 		}
@@ -98,10 +98,10 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	slog.Info(" Shutting down")
+	slog.Info("Shutting down")
 
-	// Give active requests 5 seconds to finish
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Give active requests time to finish (use configured timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.HTTP.ShutdownTimeout)
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {

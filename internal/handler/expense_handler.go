@@ -25,10 +25,10 @@ type UpdateExpenseRequest struct {
 }
 
 type ExpenseHandler struct {
-	expenseService *services.ExpenseService
+	expenseService services.ExpenseService
 }
 
-func NewExpenseHandler(expenseService *services.ExpenseService) *ExpenseHandler {
+func NewExpenseHandler(expenseService services.ExpenseService) *ExpenseHandler {
 	return &ExpenseHandler{expenseService: expenseService}
 }
 

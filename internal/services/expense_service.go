@@ -7,18 +7,27 @@ import (
 	"expense-tracker/internal/repository"
 	"expense-tracker/internal/utils"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type ExpenseService struct {
+type ExpenseService interface {
+	CreateExpenseService(ctx context.Context, userID int, amount float64, category string) (*model.Expense, error)
+	GetAllExpenseService(ctx context.Context, userID int) ([]*model.Expense, error)
+	GetExpenseByIDService(ctx context.Context, expenseId, userID int) (*model.Expense, error)
+	UpdateExpenseService(ctx context.Context, expenseID, userID int, input UpdateExpenseInput) (*model.Expense, error)
+	DeleteExpenseService(ctx context.Context, expenseID, userID int) error
+}
+
+type expenseService struct {
 	expenseRepo repository.ExpenseRepository
 	pool        *pgxpool.Pool
 }
 
-func NewExpenseService(expenseRepo repository.ExpenseRepository, pool *pgxpool.Pool) *ExpenseService {
-	return &ExpenseService{
+func NewExpenseService(expenseRepo repository.ExpenseRepository, pool *pgxpool.Pool) ExpenseService {
+	return &expenseService{
 		expenseRepo: expenseRepo,
 		pool:        pool,
 	}
@@ -29,143 +38,157 @@ type UpdateExpenseInput struct {
 	Category *string
 }
 
-func (s *ExpenseService) CreateExpenseService(ctx context.Context, userID int, amount float64, category string) (*model.Expense, error) {
+func (s *expenseService) CreateExpenseService(ctx context.Context, userID int, amount float64, category string) (*model.Expense, error) {
 	if amount <= 0 {
 		return nil, utils.ErrInvalidAmount
 	}
 	if category == "" {
 		return nil, utils.ErrInvalidCategory
 	}
-	var expense *model.Expense
-	// transaction start
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 
-		var innerErr error
-
-		expense, innerErr = s.expenseRepo.CreateExpense(ctx, userID, amount, category, tx) // call repo
-
-		if innerErr != nil {
-			return innerErr
-		}
-
-		innerErr = s.expenseRepo.AddUserStats(ctx, userID, amount, tx) // call repo
-		if innerErr != nil {
-			return innerErr
-		}
-		return nil
-	})
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("transaction error: %w", err)
+		return nil, fmt.Errorf("transaction begin failed: %w", err)
 	}
+	defer func() {
+		if err := tx.Rollback(ctx); err != nil {
+			if !errors.Is(err, pgx.ErrTxClosed) {
+				slog.Warn("failed to rollback transaction", "error", err)
+			}
+		}
+	}()
+
+	expense, err := s.expenseRepo.CreateExpense(ctx, userID, amount, category, tx)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.expenseRepo.AddUserStats(ctx, userID, amount, tx); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("transaction commit failed: %w", err)
+	}
+
 	return expense, nil
 }
 
-func (s *ExpenseService) GetAllExpenseService(ctx context.Context, userID int) ([]*model.Expense, error) {
+func (s *expenseService) GetAllExpenseService(ctx context.Context, userID int) ([]*model.Expense, error) {
 	if userID <= 0 {
 		return nil, utils.ErrInvalidInput
 	}
 	// call repo
 
-	expenses, err := s.expenseRepo.GetAllExpense(ctx, userID)
+	expenses, err := s.expenseRepo.GetAllExpense(ctx, userID, s.pool)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch expenses: %w", err)
 	}
 	return expenses, nil
 }
 
-func (s *ExpenseService) GetExpenseByIDService(ctx context.Context, expenseId, userID int) (*model.Expense, error) {
+func (s *expenseService) GetExpenseByIDService(ctx context.Context, expenseId, userID int) (*model.Expense, error) {
 
 	if expenseId <= 0 || userID <= 0 {
 		return nil, utils.ErrInvalidInput
 	}
 	// call repo
-	expense, err := s.expenseRepo.GetExpenseByID(ctx, expenseId, userID)
+	expense, err := s.expenseRepo.GetExpenseByID(ctx, expenseId, userID, s.pool)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch expense: %w", err)
 	}
 	return expense, nil
 }
 
-func (s *ExpenseService) UpdateExpenseService(ctx context.Context, expenseID, userID int, input UpdateExpenseInput) (*model.Expense, error) {
-
+func (s *expenseService) UpdateExpenseService(ctx context.Context, expenseID, userID int, input UpdateExpenseInput) (*model.Expense, error) {
 	if expenseID <= 0 || userID <= 0 {
 		return nil, utils.ErrInvalidInput
 	}
 
-	var updatedExpense *model.Expense
-	// transaction
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-
-		existing, err := s.expenseRepo.GetExpenseByID(ctx, expenseID, userID)
-		if err != nil {
-			if errors.Is(err, utils.ErrExpenseNotFound) {
-				return utils.ErrExpenseNotFound
-			}
-			return fmt.Errorf("failed to fetch expense : %w", err)
-		}
-
-		oldAmount := existing.Amount
-
-		if input.Amount != nil {
-			if *input.Amount <= 0 {
-				return utils.ErrInvalidAmount
-			}
-			existing.Amount = *input.Amount
-		}
-
-		if input.Category != nil {
-			if *input.Category == "" {
-				return utils.ErrInvalidCategory
-			}
-			existing.Category = *input.Category
-		}
-
-		// call repo
-
-		expense, _, err := s.expenseRepo.UpdateExpense(ctx, expenseID, userID, existing.Amount, existing.Category, tx)
-		if err != nil {
-			return fmt.Errorf("failed to update expense: %w", err)
-		}
-
-		diff := existing.Amount - oldAmount
-		if diff != 0 {
-			err := s.expenseRepo.UpdateUserStats(ctx, userID, diff, tx)
-			if err != nil {
-				return err
-			}
-		}
-		updatedExpense = expense
-		return nil // transaction successfull
-	})
-
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("transaction failed : %w", err)
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	return updatedExpense, nil
+	defer func() {
+		if err := tx.Rollback(ctx); err != nil {
+			if !errors.Is(err, pgx.ErrTxClosed) {
+				slog.Warn("failed to rollback transaction", "error", err)
+			}
+		}
+	}()
+
+	existing, err := s.expenseRepo.GetExpenseByID(ctx, expenseID, userID, tx)
+	if err != nil {
+		if errors.Is(err, utils.ErrExpenseNotFound) {
+			return nil, utils.ErrExpenseNotFound
+		}
+		return nil, fmt.Errorf("failed to fetch expense: %w", err)
+	}
+
+	oldAmount := existing.Amount
+
+	if input.Amount != nil {
+		if *input.Amount <= 0 {
+			return nil, utils.ErrInvalidAmount
+		}
+		existing.Amount = *input.Amount
+	}
+
+	if input.Category != nil {
+		if *input.Category == "" {
+			return nil, utils.ErrInvalidCategory
+		}
+		existing.Category = *input.Category
+	}
+
+	expense, _, err := s.expenseRepo.UpdateExpense(ctx, expenseID, userID, existing.Amount, existing.Category, tx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update expense: %w", err)
+	}
+
+	diff := existing.Amount - oldAmount
+	if diff != 0 {
+		if err := s.expenseRepo.UpdateUserStats(ctx, userID, diff, tx); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return expense, nil
 }
 
-func (s *ExpenseService) DeleteExpenseService(ctx context.Context, expenseID, userID int) error {
+func (s *expenseService) DeleteExpenseService(ctx context.Context, expenseID, userID int) error {
 	if expenseID <= 0 || userID <= 0 {
 		return utils.ErrInvalidInput
 	}
 
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-
-		usersID, deletedAmount, innerErr := s.expenseRepo.DeleteExpense(ctx, expenseID, userID, tx) // call repo to delete expense
-
-		if innerErr != nil {
-			return innerErr
-		}
-
-		innerErr = s.expenseRepo.SubstractExpenseFromUserStats(ctx, deletedAmount, usersID, tx)
-
-		if innerErr != nil {
-			return innerErr
-		}
-		return nil
-	})
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("delete transaction failed: %w", err)
+		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
+	defer func() {
+		if err := tx.Rollback(ctx); err != nil {
+			if !errors.Is(err, pgx.ErrTxClosed) {
+				slog.Warn("failed to rollback transaction", "error", err)
+			}
+		}
+	}()
+
+	usersID, deletedAmount, err := s.expenseRepo.DeleteExpense(ctx, expenseID, userID, tx)
+	if err != nil {
+		return err
+	}
+
+	if err := s.expenseRepo.SubstractExpenseFromUserStats(ctx, deletedAmount, usersID, tx); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
 	return nil
 }

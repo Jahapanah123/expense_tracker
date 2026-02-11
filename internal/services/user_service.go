@@ -9,23 +9,38 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type UserService struct {
+type UserService interface {
+	RegisterUser(ctx context.Context, email, password string) (*model.User, error)
+	ValidateEmail(email string) error
+	ValidatePassword(password string) error
+	LogInUserService(ctx context.Context, email, password string) (string, error)
+	ValidateLoginEmail(email string) error
+	GetUserService(ctx context.Context, userID int) (*model.User, error)
+}
+
+type userService struct {
 	userRepo repository.UserRepository
+	pool     *pgxpool.Pool
 }
 
-func NewUserService(userRepo repository.UserRepository) *UserService {
-	return &UserService{userRepo: userRepo}
+func NewUserService(userRepo repository.UserRepository, pool *pgxpool.Pool) UserService {
+	return &userService{
+		userRepo: userRepo,
+		pool:     pool,
+	}
 }
 
-func (s *UserService) RegisterUser(ctx context.Context, email, password string) (*model.User, error) {
+func (s *userService) RegisterUser(ctx context.Context, email, password string) (*model.User, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
-	if err := s.validateEmail(email); err != nil {
+	if err := s.ValidateEmail(email); err != nil {
 		return nil, utils.ErrInvalidInput
 	}
 
-	if err := s.validatePassword(password); err != nil {
+	if err := s.ValidatePassword(password); err != nil {
 		return nil, utils.ErrInvalidInput
 	}
 
@@ -36,7 +51,7 @@ func (s *UserService) RegisterUser(ctx context.Context, email, password string) 
 
 	// call repo
 
-	user, err := s.userRepo.CreateUser(ctx, email, hashedPassword)
+	user, err := s.userRepo.CreateUser(ctx, email, hashedPassword, s.pool)
 
 	if err != nil {
 		if errors.Is(err, utils.ErrUserAlreadyExist) {
@@ -47,7 +62,7 @@ func (s *UserService) RegisterUser(ctx context.Context, email, password string) 
 	return user, nil
 }
 
-func (s *UserService) validateEmail(email string) error {
+func (s *userService) ValidateEmail(email string) error {
 	if email == "" {
 		return errors.New("email is required")
 	}
@@ -59,7 +74,7 @@ func (s *UserService) validateEmail(email string) error {
 	return nil
 }
 
-func (s *UserService) validatePassword(password string) error {
+func (s *userService) ValidatePassword(password string) error {
 	if password == "" {
 		return errors.New("password is required")
 	}
@@ -70,10 +85,10 @@ func (s *UserService) validatePassword(password string) error {
 	return nil
 }
 
-func (s *UserService) LogInUserService(ctx context.Context, email, password string) (string, error) {
+func (s *userService) LogInUserService(ctx context.Context, email, password string) (string, error) {
 
 	// repo call
-	user, err := s.userRepo.LogInUser(ctx, email)
+	user, err := s.userRepo.LogInUser(ctx, email, s.pool)
 	if err != nil {
 		if errors.Is(err, utils.ErrUserNotFound) {
 			return "", utils.ErrInvalidCredentials
@@ -93,19 +108,19 @@ func (s *UserService) LogInUserService(ctx context.Context, email, password stri
 	return token, nil
 }
 
-func (s *UserService) validateLoginEmail(email string) error {
+func (s *userService) ValidateLoginEmail(email string) error {
 	if email == "" {
 		return errors.New("invalid email id")
 	}
 	return nil
 }
 
-func (s *UserService) GetUserService(ctx context.Context, userID int) (*model.User, error) {
+func (s *userService) GetUserService(ctx context.Context, userID int) (*model.User, error) {
 	if userID <= 0 {
 		return nil, utils.ErrInvalidInput
 	}
 	// call repo
-	user, err := s.userRepo.GetUser(ctx, userID)
+	user, err := s.userRepo.GetUser(ctx, userID, s.pool)
 	if err != nil {
 		if errors.Is(err, utils.ErrUserNotFound) {
 			return nil, utils.ErrUserNotFound

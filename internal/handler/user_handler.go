@@ -24,10 +24,10 @@ type LogInRequest struct {
 }
 
 type UserHandler struct {
-	userService *services.UserService
+	userService services.UserService
 }
 
-func NewUserHandler(userService *services.UserService) *UserHandler {
+func NewUserHandler(userService services.UserService) *UserHandler {
 	return &UserHandler{userService: userService}
 }
 

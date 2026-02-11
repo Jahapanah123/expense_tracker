@@ -3,41 +3,35 @@ package repository
 import (
 	"context"
 	"errors"
+	"expense-tracker/internal/db"
 	"expense-tracker/internal/model"
 	"expense-tracker/internal/utils"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// imported querier from db folder thats why db.Querier
 type ExpenseRepository interface {
-	CreateExpense(ctx context.Context, userID int, amount float64, category string, db DBQuerier) (*model.Expense, error)
-	AddUserStats(ctx context.Context, userID int, amount float64, db DBQuerier) error
-	GetAllExpense(ctx context.Context, userID int) ([]*model.Expense, error)
-	GetExpenseByID(ctx context.Context, expenseID, userID int) (*model.Expense, error)
-	UpdateExpense(ctx context.Context, expenseID, userID int, amount float64, category string, db DBQuerier) (*model.Expense, float64, error)
-	UpdateUserStats(ctx context.Context, userID int, amount float64, db DBQuerier) error
-	DeleteExpense(ctx context.Context, expenseID, userID int, db DBQuerier) (int, float64, error)
-	SubstractExpenseFromUserStats(ctx context.Context, amount float64, userID int, db DBQuerier) error
-}
-
-type DBQuerier interface {
-	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	CreateExpense(ctx context.Context, userID int, amount float64, category string, q db.Querier) (*model.Expense, error)
+	AddUserStats(ctx context.Context, userID int, amount float64, q db.Querier) error
+	GetAllExpense(ctx context.Context, userID int, q db.Querier) ([]*model.Expense, error)
+	GetExpenseByID(ctx context.Context, expenseID, userID int, q db.Querier) (*model.Expense, error)
+	UpdateExpense(ctx context.Context, expenseID, userID int, amount float64, category string, q db.Querier) (*model.Expense, float64, error)
+	UpdateUserStats(ctx context.Context, userID int, amount float64, q db.Querier) error
+	DeleteExpense(ctx context.Context, expenseID, userID int, q db.Querier) (int, float64, error)
+	SubstractExpenseFromUserStats(ctx context.Context, amount float64, userID int, q db.Querier) error
 }
 
 type expenseRepository struct {
-	pool *pgxpool.Pool
 }
 
-func NewExpenseRepository(pool *pgxpool.Pool) ExpenseRepository {
-	return &expenseRepository{pool: pool}
+func NewExpenseRepository() ExpenseRepository {
+	return &expenseRepository{}
 }
 
-func (r *expenseRepository) CreateExpense(ctx context.Context, userID int, amount float64, category string, db DBQuerier) (*model.Expense, error) {
+func (r *expenseRepository) CreateExpense(ctx context.Context, userID int, amount float64, category string, q db.Querier) (*model.Expense, error) {
 	query := `
 		INSERT INTO expenses(user_id, amount, category)
 		VALUES($1,$2,$3)
@@ -46,7 +40,7 @@ func (r *expenseRepository) CreateExpense(ctx context.Context, userID int, amoun
 
 	var expense model.Expense
 
-	err := db.QueryRow(ctx, query, userID, amount, category).Scan(
+	err := q.QueryRow(ctx, query, userID, amount, category).Scan(
 		&expense.ID,
 		&expense.UserID,
 		&expense.Amount,
@@ -64,7 +58,7 @@ func (r *expenseRepository) CreateExpense(ctx context.Context, userID int, amoun
 	return &expense, nil
 }
 
-func (r *expenseRepository) AddUserStats(ctx context.Context, userID int, amount float64, db DBQuerier) error {
+func (r *expenseRepository) AddUserStats(ctx context.Context, userID int, amount float64, q db.Querier) error {
 	query := `
 			INSERT INTO user_stats(user_id, total_spent)
 			VALUES($1, $2)
@@ -72,14 +66,14 @@ func (r *expenseRepository) AddUserStats(ctx context.Context, userID int, amount
 			DO UPDATE SET total_spent = user_stats.total_spent + EXCLUDED.total_spent, last_updated_at = NOW()
 	`
 	// upsert query type above
-	_, err := db.Exec(ctx, query, userID, amount)
+	_, err := q.Exec(ctx, query, userID, amount)
 	if err != nil {
 		return fmt.Errorf("failed to update user stats: %w ", err)
 	}
 	return nil
 }
 
-func (r *expenseRepository) GetAllExpense(ctx context.Context, userID int) ([]*model.Expense, error) {
+func (r *expenseRepository) GetAllExpense(ctx context.Context, userID int, q db.Querier) ([]*model.Expense, error) {
 
 	query := `
 			SELECT id, user_id, amount, created_at, category
@@ -87,7 +81,7 @@ func (r *expenseRepository) GetAllExpense(ctx context.Context, userID int) ([]*m
 			WHERE user_id = $1
 			ORDER BY created_at DESC
 	`
-	rows, err := r.pool.Query(ctx, query, userID)
+	rows, err := q.Query(ctx, query, userID)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch expenses: %w", err)
@@ -116,7 +110,7 @@ func (r *expenseRepository) GetAllExpense(ctx context.Context, userID int) ([]*m
 	return expenses, nil
 }
 
-func (r *expenseRepository) GetExpenseByID(ctx context.Context, expenseID, userID int) (*model.Expense, error) {
+func (r *expenseRepository) GetExpenseByID(ctx context.Context, expenseID, userID int, q db.Querier) (*model.Expense, error) {
 	query := `
 			SELECT id, user_id, amount, category, created_at
 			FROM expenses
@@ -124,7 +118,7 @@ func (r *expenseRepository) GetExpenseByID(ctx context.Context, expenseID, userI
 			`
 	var expense model.Expense
 
-	err := r.pool.QueryRow(ctx, query, expenseID, userID).Scan(
+	err := q.QueryRow(ctx, query, expenseID, userID).Scan(
 		&expense.ID,
 		&expense.UserID,
 		&expense.Amount,
@@ -141,14 +135,14 @@ func (r *expenseRepository) GetExpenseByID(ctx context.Context, expenseID, userI
 	return &expense, nil
 }
 
-func (r *expenseRepository) UpdateExpense(ctx context.Context, expenseID, userID int, amount float64, category string, db DBQuerier) (*model.Expense, float64, error) {
+func (r *expenseRepository) UpdateExpense(ctx context.Context, expenseID, userID int, amount float64, category string, q db.Querier) (*model.Expense, float64, error) {
 
 	var oldAmount float64 // extract old amount
 	query := `
 			SELECT amount FROM expenses
 			WHERE id = $1 AND user_id = $2
 			`
-	err := db.QueryRow(ctx, query, expenseID, userID).Scan(
+	err := q.QueryRow(ctx, query, expenseID, userID).Scan(
 		&oldAmount,
 	)
 	if err != nil {
@@ -163,7 +157,7 @@ func (r *expenseRepository) UpdateExpense(ctx context.Context, expenseID, userID
 				RETURNING id, user_id, amount, category
 	`
 
-	err = db.QueryRow(ctx, updateQuery, amount, category, expenseID, userID).Scan(
+	err = q.QueryRow(ctx, updateQuery, amount, category, expenseID, userID).Scan(
 		&expense.ID,
 		&expense.UserID,
 		&expense.Amount,
@@ -176,13 +170,13 @@ func (r *expenseRepository) UpdateExpense(ctx context.Context, expenseID, userID
 	return &expense, oldAmount, nil
 }
 
-func (r *expenseRepository) UpdateUserStats(ctx context.Context, userID int, amount float64, db DBQuerier) error {
+func (r *expenseRepository) UpdateUserStats(ctx context.Context, userID int, amount float64, q db.Querier) error {
 	query := `
 			UPDATE user_stats
 			SET total_spent = total_spent + $1	
 			WHERE user_id = $2
 			`
-	result, err := db.Exec(ctx, query, amount, userID)
+	result, err := q.Exec(ctx, query, amount, userID)
 	if err != nil {
 		return fmt.Errorf("failed to update user stats : %w", err)
 	}
@@ -193,7 +187,7 @@ func (r *expenseRepository) UpdateUserStats(ctx context.Context, userID int, amo
 	return nil
 }
 
-func (r *expenseRepository) DeleteExpense(ctx context.Context, expenseID, userID int, db DBQuerier) (int, float64, error) {
+func (r *expenseRepository) DeleteExpense(ctx context.Context, expenseID, userID int, q db.Querier) (int, float64, error) {
 	var deletedAmount float64
 	var usersID int
 
@@ -202,7 +196,7 @@ func (r *expenseRepository) DeleteExpense(ctx context.Context, expenseID, userID
 			WHERE id = $1 AND user_id = $2
 			RETURNING amount, user_id
 	`
-	err := db.QueryRow(ctx, query, expenseID, userID).Scan(
+	err := q.QueryRow(ctx, query, expenseID, userID).Scan(
 		&deletedAmount,
 		&usersID,
 	)
@@ -215,13 +209,13 @@ func (r *expenseRepository) DeleteExpense(ctx context.Context, expenseID, userID
 	return usersID, deletedAmount, nil
 }
 
-func (r *expenseRepository) SubstractExpenseFromUserStats(ctx context.Context, amount float64, userID int, db DBQuerier) error {
+func (r *expenseRepository) SubstractExpenseFromUserStats(ctx context.Context, amount float64, userID int, q db.Querier) error {
 	query := `
 			UPDATE user_stats
 			SET total_spent	= GREATEST(0, total_spent - $1), last_updated_at = NOW()
 			WHERE user_id = $2
 			`
-	result, err := db.Exec(ctx, query, amount, userID)
+	result, err := q.Exec(ctx, query, amount, userID)
 	if err != nil {
 		return err
 	}

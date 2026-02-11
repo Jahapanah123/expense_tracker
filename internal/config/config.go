@@ -10,93 +10,98 @@ import (
 )
 
 type Config struct {
-	databaseURL           string
-	dBMaxOpenConns        int
-	dBMaxIdleConns        int
-	dbIdleConnLifetime    time.Duration
-	dBConnMaxLifeTime     time.Duration
-	dBConnTimeOut         time.Duration
-	port                  string
-	serverReadTimeOut     time.Duration
-	serverWriteTimeOut    time.Duration
-	serverIdleTimeOut     time.Duration
-	serverShutDownTimeOut time.Duration
-	jwtSecret             string
+	DB   DBConfig
+	HTTP HTTPConfig
+	Auth AuthConfig
+}
+
+type DBConfig struct {
+	Host            string
+	Port            int
+	User            string
+	Password        string
+	Name            string
+	SSLMode         string
+	MaxOpenConns    int
+	MaxIdleConns    int
+	ConnMaxIdleTime time.Duration
+	ConnMaxLifetime time.Duration
+	ConnTimeout     time.Duration
+}
+
+type HTTPConfig struct {
+	Port            string
+	ReadTimeout     time.Duration
+	WriteTimeout    time.Duration
+	IdleTimeout     time.Duration
+	ShutdownTimeout time.Duration
+}
+
+type AuthConfig struct {
+	JWTSecret string
 }
 
 func Load() (*Config, error) {
-	_ = godotenv.Load() // silently ignore if .env not found
+	if err := godotenv.Load(); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("failed to load .env: %w", err)
+	}
 
 	cfg := &Config{
-		databaseURL:           getEnv("DATABASE_URL", ""),
-		dBMaxOpenConns:        getEnvInt("DB_MAX_OPEN_CONNS", 25),
-		dBMaxIdleConns:        getEnvInt("DB_MAX_IDLE_CONNS", 10),
-		dbIdleConnLifetime:    getEnvTimeDuration("DB_IDLE_CONN_LIFETIME", 10*time.Second),
-		dBConnMaxLifeTime:     getEnvTimeDuration("DB_MAX_CONN_LIFETIME", 30*time.Minute),
-		dBConnTimeOut:         getEnvTimeDuration("DB_CONN_TIMEOUT", 5*time.Second),
-		serverReadTimeOut:     getEnvTimeDuration("SERVER_READ_TIMEOUT", 5*time.Second),
-		serverWriteTimeOut:    getEnvTimeDuration("SERVER_WRITE_TIMEOUT", 10*time.Second),
-		serverIdleTimeOut:     getEnvTimeDuration("SERVER_IDLE_TIMEOUT", 60*time.Second),
-		serverShutDownTimeOut: getEnvTimeDuration("SERVER_SHUTDOWN_TIMEOUT", 15*time.Second),
-		port:                  getEnv("PORT", ""),
-		jwtSecret:             getEnv("JWT_SECRET", ""),
+		DB: DBConfig{
+			Host:            getEnv("DB_HOST", "localhost"),
+			Port:            getEnvInt("DB_PORT", 5432),
+			User:            getEnv("DB_USER", "postgres"),
+			Password:        getEnv("DB_PASSWORD", ""),
+			Name:            getEnv("DB_NAME", "postgres"),
+			SSLMode:         getEnv("DB_SSL_MODE", "disable"),
+			MaxOpenConns:    getEnvInt("DB_MAX_OPEN_CONNS", 25),
+			MaxIdleConns:    getEnvInt("DB_MAX_IDLE_CONNS", 10),
+			ConnMaxIdleTime: getEnvDuration("DB_CONN_MAX_IDLE_TIME", 10*time.Minute),
+			ConnMaxLifetime: getEnvDuration("DB_CONN_MAX_LIFETIME", 30*time.Minute),
+			ConnTimeout:     getEnvDuration("DB_CONN_TIMEOUT", 3*time.Second),
+		},
+		HTTP: HTTPConfig{
+			Port:            getEnv("SERVER_PORT", "8080"),
+			ReadTimeout:     getEnvDuration("SERVER_READ_TIMEOUT", 5*time.Second),
+			WriteTimeout:    getEnvDuration("SERVER_WRITE_TIMEOUT", 10*time.Second),
+			IdleTimeout:     getEnvDuration("SERVER_IDLE_TIMEOUT", 60*time.Second),
+			ShutdownTimeout: getEnvDuration("SERVER_SHUTDOWN_TIMEOUT", 15*time.Second),
+		},
+		Auth: AuthConfig{
+			JWTSecret: getEnv("JWT_SECRET", ""),
+		},
 	}
 
-	// Validate required fields
-	if cfg.databaseURL == "" {
-		return nil, fmt.Errorf("DATABASE_URL is required")
-	}
-	if cfg.jwtSecret == "" {
+	if cfg.Auth.JWTSecret == "" {
 		return nil, fmt.Errorf("JWT_SECRET is required")
-	}
-
-	// Default port
-	if cfg.port == "" {
-		cfg.port = "8080"
 	}
 
 	return cfg, nil
 }
 
-// Get functions to read values
-func (c *Config) DatabaseURL() string                  { return c.databaseURL }
-func (c *Config) DBMaxOpenConns() int                  { return c.dBMaxOpenConns }
-func (c *Config) DBMaxIdleConns() int                  { return c.dBMaxIdleConns }
-func (c *Config) DBIdleConnLifetime() time.Duration    { return c.dbIdleConnLifetime }
-func (c *Config) DBConnMaxLifeTime() time.Duration     { return c.dBConnMaxLifeTime }
-func (c *Config) DBConnTimeOut() time.Duration         { return c.dBConnTimeOut }
-func (c *Config) Port() string                         { return c.port }
-func (c *Config) ServerReadTimeOut() time.Duration     { return c.serverReadTimeOut }
-func (c *Config) ServerWriteTimeOut() time.Duration    { return c.serverWriteTimeOut }
-func (c *Config) ServerIdleTimeOut() time.Duration     { return c.serverIdleTimeOut }
-func (c *Config) ServerShutDownTimeOut() time.Duration { return c.serverShutDownTimeOut }
-func (c *Config) JwtSecret() string                    { return c.jwtSecret }
+// --- helpers ---
 
-// function to get string from Getenv
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
+func getEnv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
 	}
-	return defaultValue
+	return fallback
 }
 
-// function get get int from Getenv
-func getEnvInt(key string, defaultValue int) int {
-	if value := os.Getenv(key); value != "" {
-		if v, err := strconv.Atoi(value); err == nil { // every value comes from env is string so change to int
-			return v
+func getEnvInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if i, err := strconv.Atoi(v); err == nil {
+			return i
 		}
 	}
-	return defaultValue
+	return fallback
 }
 
-// function to get time.duration from Getenv
-
-func getEnvTimeDuration(key string, defaultValue time.Duration) time.Duration {
-	if value := os.Getenv(key); value != "" {
-		if v, err := time.ParseDuration(value); err == nil {
-			return v
+func getEnvDuration(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
 		}
 	}
-	return defaultValue
+	return fallback
 }

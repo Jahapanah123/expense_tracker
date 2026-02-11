@@ -8,33 +8,43 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func Connect(cfg *config.Config) (*pgxpool.Pool, error) {
-	pgxConfig, err := pgxpool.ParseConfig(cfg.DatabaseURL())
+func Connect(ctx context.Context, cfg config.DBConfig) (*pgxpool.Pool, error) {
+	// Build DSN from individual fields (more secure & flexible than DATABASE_URL)
+	dsn := fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s connect_timeout=%d",
+		cfg.Host,
+		cfg.Port,
+		cfg.User,
+		cfg.Password,
+		cfg.Name,
+		cfg.SSLMode,
+		int(cfg.ConnTimeout.Seconds()), // pgx uses seconds for connect_timeout
+	)
 
+	poolConfig, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse database URL: %w", err)
+		return nil, fmt.Errorf("failed to parse DB config: %w", err)
 	}
 
-	// set pool limits
+	// Apply pool settings
+	poolConfig.MaxConns = int32(cfg.MaxOpenConns)
+	poolConfig.MinConns = int32(cfg.MaxIdleConns)
+	poolConfig.MaxConnIdleTime = cfg.ConnMaxIdleTime
+	poolConfig.MaxConnLifetime = cfg.ConnMaxLifetime
 
-	pgxConfig.MaxConns = int32(cfg.DBMaxOpenConns())     // max open connections
-	pgxConfig.MinConns = int32(cfg.DBMaxIdleConns())     // minimum idle connections
-	pgxConfig.MaxConnIdleTime = cfg.DBIdleConnLifetime() // max lifetime per idle connection
-	pgxConfig.MaxConnLifetime = cfg.DBConnMaxLifeTime()  // max lifetime per connection
-
-	pool, err := pgxpool.NewWithConfig(context.Background(), pgxConfig)
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create pool: %w", err)
+		return nil, fmt.Errorf("failed to create connection pool: %w", err)
 	}
 
-	// Ping DB to ensure connection is valid using connection timeout
-
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.DBConnTimeOut())
+	// Test the connection
+	pingCtx, cancel := context.WithTimeout(ctx, cfg.ConnTimeout)
 	defer cancel()
 
-	if err := pool.Ping(ctx); err != nil {
+	if err := pool.Ping(pingCtx); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("unable to ping database: %w", err)
+		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
+
 	return pool, nil
 }
