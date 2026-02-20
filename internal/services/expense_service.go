@@ -47,22 +47,23 @@ func (s *expenseService) CreateExpenseService(ctx context.Context, userID int, a
 	var expense *model.Expense
 
 	err := s.uow.Execute(ctx, func(txCtx context.Context) error {
-		var err error
+		var err error // -> limited to this function
 
 		// CreateExpense
 		expense, err = s.expenseRepo.CreateExpense(txCtx, userID, amount, category)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to create expense record: %w", err)
 		}
 
 		// Add stats
 		if err := s.expenseRepo.AddUserStats(txCtx, userID, amount); err != nil {
-			return err
+			return fmt.Errorf("failed to update user stats: %w", err)
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		// Wrap the final transaction error
+		return nil, fmt.Errorf("CreateExpenseService transaction failed: %w", err)
 	}
 	return expense, nil
 }
@@ -101,17 +102,15 @@ func (s *expenseService) UpdateExpenseService(ctx context.Context, expenseID, us
 	var expense *model.Expense
 
 	err := s.uow.Execute(ctx, func(txCtx context.Context) error {
-		// 1. Fetch existing data to handle partial updates
 		existing, err := s.expenseRepo.GetExpenseByID(txCtx, expenseID, userID)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to fetch existing expense: %w", err)
 		}
 
 		oldAmount := existing.Amount
 		newAmount := existing.Amount
 		newCategory := existing.Category
 
-		// 2. Map pointers to values (Keep old if nil)
 		if input.Amount != nil {
 			if *input.Amount <= 0 {
 				return utils.ErrInvalidAmount
@@ -128,14 +127,14 @@ func (s *expenseService) UpdateExpenseService(ctx context.Context, expenseID, us
 		// 3. Update with final values
 		expense, _, err = s.expenseRepo.UpdateExpense(txCtx, expenseID, userID, newAmount, newCategory)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to update expense record: %w", err)
 		}
 
 		// 4. Update stats based on difference
 		diff := newAmount - oldAmount
 		if diff != 0 {
 			if err := s.expenseRepo.UpdateUserStats(txCtx, userID, diff); err != nil {
-				return err
+				return fmt.Errorf("failed to update user stats: %w", err)
 			}
 		}
 
@@ -143,7 +142,7 @@ func (s *expenseService) UpdateExpenseService(ctx context.Context, expenseID, us
 	})
 
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("UpdateExpenseService failed: %w", err)
 	}
 
 	return expense, nil
@@ -161,18 +160,18 @@ func (s *expenseService) DeleteExpenseService(ctx context.Context, expenseID, us
 
 		usersID, deletedAmount, err = s.expenseRepo.DeleteExpense(txCtx, expenseID, userID)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to delete expense record: %w", err)
 		}
 
 		if err := s.expenseRepo.SubstractExpenseFromUserStats(txCtx, deletedAmount, usersID); err != nil {
-			return err
+			return fmt.Errorf("failed to adjust user stats after deletion: %w", err)
 		}
 
 		return nil
 	})
 
 	if err != nil {
-		return err
+		return fmt.Errorf("DeleteExpenseService: %w", err)
 	}
 	return nil
 }
