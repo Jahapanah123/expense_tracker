@@ -3,14 +3,13 @@ package services
 import (
 	"context"
 	"errors"
+	"expense-tracker/internal/db"
 	"expense-tracker/internal/model"
 	"expense-tracker/internal/repository"
 	"expense-tracker/internal/utils"
 	"fmt"
 	"regexp"
 	"strings"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type UserService interface {
@@ -24,13 +23,13 @@ type UserService interface {
 
 type userService struct {
 	userRepo repository.UserRepository
-	pool     *pgxpool.Pool
+	uow      db.UnitOfWork
 }
 
-func NewUserService(userRepo repository.UserRepository, pool *pgxpool.Pool) UserService {
+func NewUserService(userRepo repository.UserRepository, uow db.UnitOfWork) UserService {
 	return &userService{
 		userRepo: userRepo,
-		pool:     pool,
+		uow:      uow,
 	}
 }
 
@@ -51,7 +50,7 @@ func (s *userService) RegisterUser(ctx context.Context, email, password string) 
 
 	// call repo
 
-	user, err := s.userRepo.CreateUser(ctx, email, hashedPassword, s.pool)
+	user, err := s.userRepo.CreateUser(ctx, email, hashedPassword)
 
 	if err != nil {
 		if errors.Is(err, utils.ErrUserAlreadyExist) {
@@ -88,7 +87,7 @@ func (s *userService) ValidatePassword(password string) error {
 func (s *userService) LogInUserService(ctx context.Context, email, password string) (string, error) {
 
 	// repo call
-	user, err := s.userRepo.LogInUser(ctx, email, s.pool)
+	user, err := s.userRepo.LogInUser(ctx, email)
 	if err != nil {
 		if errors.Is(err, utils.ErrUserNotFound) {
 			return "", utils.ErrInvalidCredentials
@@ -120,7 +119,7 @@ func (s *userService) GetUserService(ctx context.Context, userID int) (*model.Us
 		return nil, utils.ErrInvalidInput
 	}
 	// call repo
-	user, err := s.userRepo.GetUser(ctx, userID, s.pool)
+	user, err := s.userRepo.GetUser(ctx, userID)
 	if err != nil {
 		if errors.Is(err, utils.ErrUserNotFound) {
 			return nil, utils.ErrUserNotFound

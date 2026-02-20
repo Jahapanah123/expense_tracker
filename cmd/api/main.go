@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"expense-tracker/internal/config"
 	"expense-tracker/internal/db"
 	"expense-tracker/internal/handler"
@@ -11,42 +10,35 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/gin-gonic/gin"
 )
 
 func main() {
+
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
-	cfg, err := config.Load()
-	if err != nil {
-		slog.Error("failed to load config", "error", err)
-		os.Exit(1)
-	}
-	slog.Info("Config loaded successfully")
+	cfg := config.Load()
 
-	// ✅ Fix 1: Pass context and cfg.DB (not full cfg)
-	ctx := context.Background()
-	pool, err := db.Connect(ctx, cfg.DB)
-	if err != nil {
-		slog.Error("failed to connect to database", "error", err)
-		os.Exit(1)
-	}
-	slog.Info("Connected to Database")
+	pool := db.Connect(cfg)
 	defer pool.Close()
 
+	uow := db.NewUnitOfWork(pool)
+
 	// user
-	userRepo := repository.NewUserRepository()
-	userService := services.NewUserService(userRepo, pool)
+	userRepo := repository.NewUserRepository(pool)
+	userService := services.NewUserService(userRepo, uow)
 	userHandler := handler.NewUserHandler(userService)
 
 	// Expense
-	expenseRepo := repository.NewExpenseRepository()
-	expenseService := services.NewExpenseService(expenseRepo, pool)
+	expenseRepo := repository.NewExpenseRepository(pool)
+	expenseService := services.NewExpenseService(expenseRepo, uow)
 	expenseHandler := handler.NewExpenseHandler(expenseService)
+
+	if cfg.AppEnv == "production" {
+		gin.SetMode(gin.ReleaseMode)
+	}
 
 	router := gin.Default()
 	router.SetTrustedProxies(nil)
@@ -76,36 +68,17 @@ func main() {
 		userRoute.DELETE("/expenses/:id", expenseHandler.DeleteExpenseHandler)
 	}
 
-	// ✅ Fix 2: Use cfg.HTTP.Port (not os.Getenv + fallback)
-	port := cfg.HTTP.Port
-
 	srv := &http.Server{
-		Addr:         ":" + port,
+		Addr:         ":" + cfg.Server.Port,
 		Handler:      router,
-		ReadTimeout:  cfg.HTTP.ReadTimeout,
-		WriteTimeout: cfg.HTTP.WriteTimeout,
-		IdleTimeout:  cfg.HTTP.IdleTimeout,
+		ReadTimeout:  cfg.Server.ReadTimeout,
+		WriteTimeout: cfg.Server.WriteTimeout,
+		IdleTimeout:  cfg.Server.IdleTimeout,
 	}
 
-	go func() {
-		slog.Info("server running", "port", port)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("Server crashed", "error", err)
-		}
-	}()
-
-	// Wait for shutdown signal
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-	slog.Info("Shutting down")
-
-	// Give active requests time to finish (use configured timeout)
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.HTTP.ShutdownTimeout)
-	defer cancel()
-
-	if err := srv.Shutdown(ctx); err != nil {
-		slog.Error("Forced shutdown", "error", err)
+	slog.Info("server running", "port", cfg.Server.Port)
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		slog.Error("Server crashed", "error", err)
+		os.Exit(1)
 	}
-	slog.Info("Server stopped cleanly")
 }

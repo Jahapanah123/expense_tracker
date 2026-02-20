@@ -4,47 +4,36 @@ import (
 	"context"
 	"expense-tracker/internal/config"
 	"fmt"
+	"log"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func Connect(ctx context.Context, cfg config.DBConfig) (*pgxpool.Pool, error) {
-	// Build DSN from individual fields (more secure & flexible than DATABASE_URL)
-	dsn := fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s connect_timeout=%d",
-		cfg.Host,
-		cfg.Port,
-		cfg.User,
-		cfg.Password,
-		cfg.Name,
-		cfg.SSLMode,
-		int(cfg.ConnTimeout.Seconds()), // pgx uses seconds for connect_timeout
-	)
+func Connect(cfg *config.Config) *pgxpool.Pool {
+	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
+		cfg.DB.User, cfg.DB.Password, cfg.DB.Host, cfg.DB.Port, cfg.DB.Name, cfg.DB.SSLMode)
 
 	poolConfig, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse DB config: %w", err)
+		log.Fatalf("DSN parse error: %v", err)
 	}
 
-	// Apply pool settings
-	poolConfig.MaxConns = int32(cfg.MaxOpenConns)
-	poolConfig.MinConns = int32(cfg.MaxIdleConns)
-	poolConfig.MaxConnIdleTime = cfg.ConnMaxIdleTime
-	poolConfig.MaxConnLifetime = cfg.ConnMaxLifetime
+	poolConfig.MaxConns = int32(cfg.DB.MaxOpenConns)
+	poolConfig.MinConns = int32(cfg.DB.MaxIdleConns)
+	poolConfig.MaxConnIdleTime = cfg.DB.ConnMaxIdleTime
+	poolConfig.MaxConnLifetime = cfg.DB.ConnMaxLifetime
+
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.DB.ConnTimeout)
+	defer cancel()
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create connection pool: %w", err)
+		log.Fatalf("pool creation error: %v", err)
 	}
-
-	// Test the connection
-	pingCtx, cancel := context.WithTimeout(ctx, cfg.ConnTimeout)
-	defer cancel()
-
-	if err := pool.Ping(pingCtx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("failed to ping database: %w", err)
+	if err := pool.Ping(ctx); err != nil {
+		log.Fatalf("DB ping error: %v", err)
 	}
-
-	return pool, nil
+	slog.Info("Connected to Database Successfully")
+	return pool
 }
