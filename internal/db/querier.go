@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -38,7 +39,7 @@ type pgxUoW struct {
 func (u *pgxUoW) Execute(ctx context.Context, fn func(ctx context.Context) error) error {
 	tx, err := u.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
 	defer tx.Rollback(ctx)
@@ -50,7 +51,10 @@ func (u *pgxUoW) Execute(ctx context.Context, fn func(ctx context.Context) error
 		return err
 	}
 
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+	return nil
 }
 
 // Helper to get TX in Repo

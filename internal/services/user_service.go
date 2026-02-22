@@ -8,6 +8,7 @@ import (
 	"expense-tracker/internal/repository"
 	"expense-tracker/internal/utils"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 )
@@ -16,8 +17,7 @@ type UserService interface {
 	RegisterUser(ctx context.Context, email, password string) (*model.User, error)
 	ValidateEmail(email string) error
 	ValidatePassword(password string) error
-	LogInUserService(ctx context.Context, email, password string) (string, error)
-	ValidateLoginEmail(email string) error
+	LogInUserService(ctx context.Context, email, password string) (string, *model.User, error)
 	GetUserService(ctx context.Context, userID int) (*model.User, error)
 }
 
@@ -33,10 +33,12 @@ func NewUserService(userRepo repository.UserRepository, uow db.UnitOfWork) UserS
 	}
 }
 
+var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
+
 func (s *userService) RegisterUser(ctx context.Context, email, password string) (*model.User, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if err := s.ValidateEmail(email); err != nil {
-		return nil, utils.ErrInvalidInput
+		return nil, err // for user visibility if error is in email or password
 	}
 
 	if err := s.ValidatePassword(password); err != nil {
@@ -62,13 +64,8 @@ func (s *userService) RegisterUser(ctx context.Context, email, password string) 
 }
 
 func (s *userService) ValidateEmail(email string) error {
-	if email == "" {
-		return errors.New("email is required")
-	}
-
-	emailRegex := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
 	if !emailRegex.MatchString(email) {
-		return errors.New("invalid email format")
+		return errors.New("invalid email")
 	}
 	return nil
 }
@@ -84,34 +81,28 @@ func (s *userService) ValidatePassword(password string) error {
 	return nil
 }
 
-func (s *userService) LogInUserService(ctx context.Context, email, password string) (string, error) {
-
+func (s *userService) LogInUserService(ctx context.Context, email, password string) (string, *model.User, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
 	// repo call
 	user, err := s.userRepo.LogInUser(ctx, email)
 	if err != nil {
+		slog.Warn("login failed", "error", err)
 		if errors.Is(err, utils.ErrUserNotFound) {
-			return "", utils.ErrInvalidCredentials
+			return "", nil, utils.ErrInvalidCredentials
 		}
-		return "", fmt.Errorf("log in failed: %w", err)
+		return "", nil, fmt.Errorf("log in failed: %w", err)
 	}
 	// compare password
 
 	if err := utils.CheckPassword(password, user.PasswordHash); err != nil {
-		return "", utils.ErrInvalidCredentials
+		return "", nil, utils.ErrInvalidCredentials
 	}
 	// token generation
 	token, err := utils.GenerateToken(int64(user.ID))
 	if err != nil {
-		return "", fmt.Errorf("token genration failed: %w", err)
+		return "", nil, fmt.Errorf("token genration failed: %w", err)
 	}
-	return token, nil
-}
-
-func (s *userService) ValidateLoginEmail(email string) error {
-	if email == "" {
-		return errors.New("invalid email id")
-	}
-	return nil
+	return token, user, nil
 }
 
 func (s *userService) GetUserService(ctx context.Context, userID int) (*model.User, error) {

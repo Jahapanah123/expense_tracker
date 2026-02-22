@@ -26,14 +26,24 @@ func main() {
 
 	uow := db.NewUnitOfWork(pool)
 
+	// dashboard
+	dashboardRepo := repository.NewDashboardRepository(pool)
+	dashboardService := services.NewDashboardService(dashboardRepo)
+	dashboardHandler := handler.NewDashboardHandler(dashboardService)
+
 	// user
 	userRepo := repository.NewUserRepository(pool)
 	userService := services.NewUserService(userRepo, uow)
 	userHandler := handler.NewUserHandler(userService)
 
+	// category
+	categoryRepo := repository.NewCategoryRepository(pool)
+	categoryService := services.NewCategoryService(categoryRepo, uow)
+	categoryHandler := handler.NewCategoryHandler(categoryService)
+
 	// Expense
 	expenseRepo := repository.NewExpenseRepository(pool)
-	expenseService := services.NewExpenseService(expenseRepo, uow)
+	expenseService := services.NewExpenseService(expenseRepo, categoryRepo, uow)
 	expenseHandler := handler.NewExpenseHandler(expenseService)
 
 	if cfg.AppEnv == "production" {
@@ -66,6 +76,8 @@ func main() {
 		userRoute.GET("/expenses/:id", expenseHandler.GetExpenseByIDHandler)
 		userRoute.PUT("/expenses/:id", expenseHandler.UpdateExpenseHandler)
 		userRoute.DELETE("/expenses/:id", expenseHandler.DeleteExpenseHandler)
+		userRoute.GET("/categories", categoryHandler.GetAllCategoriesHandler)
+		userRoute.GET("/dashboard", dashboardHandler.GetDashboard)
 	}
 
 	srv := &http.Server{

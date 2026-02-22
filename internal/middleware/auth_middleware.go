@@ -9,6 +9,8 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+const UserIDKey = "user_id"
+
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 
@@ -46,7 +48,7 @@ func AuthMiddleware() gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "user_id missing"})
 			return
 		}
-		c.Set("user_id", int(userID))
+		c.Set(UserIDKey, int64(userID))
 		c.Next()
 	}
 }

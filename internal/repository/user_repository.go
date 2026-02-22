@@ -63,7 +63,6 @@ func (r *userRepository) LogInUser(ctx context.Context, email string) (*model.Us
     `
 	var user model.User
 
-	// 2. Execute via interface
 	err := q.QueryRow(ctx, query, email).Scan(
 		&user.ID,
 		&user.Email,
@@ -91,7 +90,7 @@ func (r *userRepository) GetUser(ctx context.Context, userID int) (*model.User, 
     `
 	var user model.User
 
-	// 2. Direct execution via interface
+	
 	err := q.QueryRow(ctx, query, userID).Scan(
 		&user.ID,
 		&user.Email,

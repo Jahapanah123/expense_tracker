@@ -82,7 +82,7 @@ func (h *UserHandler) LogInUserHandler(c *gin.Context) {
 
 	//service call
 
-	token, err := h.userService.LogInUserService(ctx, input.Email, input.Password)
+	token, user, err := h.userService.LogInUserService(ctx, input.Email, input.Password)
 	if err != nil {
 		slog.Warn("log in failed", "invalid credentials", input.Email)
 		if errors.Is(err, utils.ErrInvalidCredentials) {
@@ -93,7 +93,7 @@ func (h *UserHandler) LogInUserHandler(c *gin.Context) {
 		utils.RespondError(c, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	slog.Info(" log in successfull", "email", input.Email)
+	slog.Info(" log in successfull", "user_id", user.ID)
 	c.JSON(http.StatusOK, gin.H{
 		"token": token,
 	})
